@@ -823,18 +823,30 @@
                 const remoteVideo = document.getElementById('remote-video');
                 remoteVideo.srcObject = remoteStream;
                 applyAudioRouting(remoteVideo);
-                remoteVideo.play().catch(() => {});
+                try {
+                    await remoteVideo.play();
+                } catch (e) {
+                    console.log("Autoplay blocked, waiting for user interaction", e);
+                }
             } else {
                 const remoteAudio = document.getElementById('remote-audio');
                 remoteAudio.srcObject = remoteStream;
                 applyAudioRouting(remoteAudio);
-                remoteAudio.play().catch(() => {});
+                try {
+                    await remoteAudio.play();
+                } catch (e) {
+                    console.log("Audio autoplay blocked", e);
+                }
             }
         });
         
         call.on('close', () => {
             triggerDisconnect(false);
         });
+    }
+
+    function applyAudioRouting(element) {
+        element.volume = isLoudSpeaker ? 1.0 : 0.35;
     }
 
     function lockUIOnConnect() {
@@ -933,7 +945,6 @@
                         const completeBlob = new Blob(incomingFileBuffer, { type: incomingFileMeta.fileType || 'application/octet-stream' });
                         const downloadUrl = URL.createObjectURL(completeBlob);
                         
-                        // Automatic Download Trigger
                         const autoLink = document.createElement('a');
                         autoLink.href = downloadUrl;
                         autoLink.download = incomingFileMeta.name || 'downloaded-file';
@@ -943,7 +954,6 @@
                             document.body.removeChild(autoLink);
                         }, 1000);
 
-                        // Chat Box Message with Manual Download Button
                         appendFileDownloadMessage(incomingFileMeta.name, downloadUrl);
 
                         document.getElementById('transfer-status').innerText = `Completed: ${incomingFileMeta.name}`;
