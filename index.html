@@ -652,7 +652,6 @@
             <div class="file-transfer-section">
                 <label>P2P File / Folder Share</label>
                 <div class="file-input-wrapper">
-                    <!-- Hidden inputs for Single File or Full Folder selection -->
                     <input type="file" id="single-file-input" style="display:none" onchange="handleFileSelection(this.files[0])">
                     <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none" onchange="handleFolderSelection(this.files)">
                     
@@ -682,7 +681,6 @@
     let usingFrontCamera = true;
     let activeCallMode = 'video';
     
-    // Transfer Queue & Management Variables
     let filesQueue = [];
     let currentFileIndex = 0;
     let incomingFileMeta = null;
@@ -802,25 +800,12 @@
                 const remoteVideo = document.getElementById('remote-video');
                 remoteVideo.srcObject = remoteStream;
                 applyAudioRouting(remoteVideo);
-                
-                let playPromise = remoteVideo.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(error => {
-                        document.body.addEventListener('click', () => {
-                            remoteVideo.play();
-                        }, { once: true });
-                    });
-                }
+                remoteVideo.play().catch(() => {});
             } else {
                 const remoteAudio = document.getElementById('remote-audio');
                 remoteAudio.srcObject = remoteStream;
                 applyAudioRouting(remoteAudio);
-
-                remoteAudio.play().catch(err => {
-                    document.body.addEventListener('click', () => {
-                        remoteAudio.play();
-                    }, { once: true });
-                });
+                remoteAudio.play().catch(() => {});
             }
         });
         
@@ -844,59 +829,49 @@
 
     async function ensureLocalStream(audioOnly = false) {
         if (localStream) return localStream;
-        
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert("Your browser does not support audio/video input!");
-            return null;
-        }
-
         try {
             const constraints = audioOnly ? { video: false, audio: true } : { video: { facingMode: 'user' }, audio: true };
             localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            
             if (!audioOnly) {
                 const localVideo = document.getElementById('local-video');
                 localVideo.srcObject = localStream;
                 await localVideo.play();
                 isCameraOn = true;
-            } else {
-                isCameraOn = false;
             }
             return localStream;
         } catch (err) {
-            try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const oscillator = audioCtx.createOscillator();
-                const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
-                oscillator.start();
-                localStream = dst.stream;
-                return localStream;
-            } catch(e) {
-                alert("Microphone permission was denied or is blocked by your browser!");
-                return null;
-            }
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const dst = oscillator.connect(audioCtx.createMediaStreamDestination());
+            oscillator.start();
+            localStream = dst.stream;
+            return localStream;
         }
     }
 
     function setupConnectionEvents() {
+        // Set binary type explicitly for dependable raw chunks delivery
+        if (conn && conn.dataChannel) {
+            conn.dataChannel.binaryType = 'arraybuffer';
+        }
+
         conn.on('data', (data) => {
             if (data === '__DISCONNECT__') {
                 triggerDisconnect(false); 
-            } else if (typeof data === 'object' && data !== null) {
-                if (data.type === 'emoji') {
-                    triggerEmojiAnimation(data.emoji);
-                    appendMessage(`${data.emoji}`, 'incoming');
-                } else if (data.type === 'file-meta') {
-                    incomingFileMeta = data;
-                    incomingFileBuffer = [];
-                    receivedSize = 0;
-                    document.getElementById('progress-container').style.display = 'block';
-                    document.getElementById('transfer-status').innerText = `Receiving 0% (${incomingFileMeta.name})`;
-                    appendMessage(`Incoming: ${incomingFileMeta.name} (${(incomingFileMeta.size / (1024*1024)).toFixed(2)} MB)`, 'incoming');
-                }
-            } else if (data instanceof ArrayBuffer) {
-                incomingFileBuffer.push(data);
-                receivedSize += data.byteLength;
+            } else if (typeof data === 'object' && data !== null && data.type === 'emoji') {
+                triggerEmojiAnimation(data.emoji);
+                appendMessage(`${data.emoji}`, 'incoming');
+            } else if (typeof data === 'object' && data !== null && data.type === 'file-meta') {
+                incomingFileMeta = data;
+                incomingFileBuffer = [];
+                receivedSize = 0;
+                document.getElementById('progress-container').style.display = 'block';
+                document.getElementById('transfer-status').innerText = `Receiving 0% (${incomingFileMeta.name})`;
+                appendMessage(`Incoming: ${incomingFileMeta.name} (${(incomingFileMeta.size / (1024*1024)).toFixed(2)} MB)`, 'incoming');
+            } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+                const chunk = data instanceof ArrayBuffer ? data : data.buffer;
+                incomingFileBuffer.push(chunk);
+                receivedSize += chunk.byteLength;
 
                 if (incomingFileMeta) {
                     const progress = Math.min(100, Math.round((receivedSize / incomingFileMeta.size) * 100));
@@ -904,16 +879,20 @@
                     document.getElementById('transfer-status').innerText = `Receiving ${progress}%`;
 
                     if (receivedSize >= incomingFileMeta.size) {
-                        // Automatically trigger download on partner side using proper relative path or name
-                        const completeBlob = new Blob(incomingFileBuffer, { type: incomingFileMeta.fileType });
+                        const completeBlob = new Blob(incomingFileBuffer, { type: incomingFileMeta.fileType || 'application/octet-stream' });
                         const downloadUrl = URL.createObjectURL(completeBlob);
                         
                         const downloadLink = document.createElement('a');
                         downloadLink.href = downloadUrl;
-                        downloadLink.download = incomingFileMeta.path || incomingFileMeta.name;
+                        // Fallback name if path isn't present
+                        downloadLink.download = incomingFileMeta.name || 'downloaded-file';
                         document.body.appendChild(downloadLink);
                         downloadLink.click();
-                        document.body.removeChild(downloadLink);
+                        
+                        setTimeout(() => {
+                            document.body.removeChild(downloadLink);
+                            URL.revokeObjectURL(downloadUrl);
+                        }, 1000);
 
                         document.getElementById('transfer-status').innerText = `Downloaded: ${incomingFileMeta.name}`;
                         appendMessage(`Downloaded successfully: ${incomingFileMeta.name}`, 'incoming');
@@ -966,36 +945,36 @@
         }
 
         const file = filesQueue[currentFileIndex];
-        const CHUNK_SIZE = 16384; // 16KB chunking
-        const reader = new FileReader();
+        const CHUNK_SIZE = 16384; 
         let offset = 0;
 
-        // Retain relative directory paths for folder downloads
-        const relativePath = file.webkitRelativePath && file.webkitRelativePath !== "" ? file.webkitRelativePath : file.name;
+        const displayName = file.name;
 
         conn.send({
             type: 'file-meta',
-            name: file.name,
-            path: relativePath,
+            name: displayName,
             size: file.size,
             fileType: file.type
         });
 
-        document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${file.name} (0%)`;
+        document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${displayName} (0%)`;
+
+        const reader = new FileReader();
 
         reader.onload = function(e) {
+            if (!conn || !conn.open) return;
             conn.send(e.target.result);
             offset += e.target.result.byteLength;
 
             const progress = Math.min(100, Math.round((offset / file.size) * 100));
             document.getElementById('progress-bar').style.width = progress + '%';
-            document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${file.name} (${progress}%)`;
+            document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${displayName} (${progress}%)`;
 
             if (offset < file.size) {
                 readNextChunk();
             } else {
                 currentFileIndex++;
-                sendNextFileInQueue();
+                setTimeout(sendNextFileInGroup, 200); // small delay between files
             }
         };
 
@@ -1007,76 +986,59 @@
         readNextChunk();
     }
 
+    function sendNextFileInGroup() {
+        sendNextFileInQueue();
+    }
+
     async function toggleCamera() {
         const camBtn = document.getElementById('cam-btn');
-
         if (!isCameraOn) {
             try {
                 const videoStream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: usingFrontCamera ? 'user' : 'environment' }, 
                     audio: true 
                 });
-                
                 const audioTrack = localStream ? localStream.getAudioTracks()[0] : null;
                 localStream = videoStream;
-                if(audioTrack) {
-                    localStream.addTrack(audioTrack);
-                }
+                if(audioTrack) localStream.addTrack(audioTrack);
 
                 const localVideo = document.getElementById('local-video');
                 localVideo.srcObject = localStream;
                 localVideo.play();
-                
                 isCameraOn = true;
                 camBtn.innerText = "Turn Off Cam";
                 camBtn.classList.remove('active');
-
-                if (currentCall) {
-                    updateStreamInCall();
-                }
+                if (currentCall) updateStreamInCall();
             } catch (err) {
                 alert('Camera access denied or unavailable.');
             }
         } else {
-            const videoTracks = localStream.getVideoTracks();
-            videoTracks.forEach(track => track.stop());
+            localStream.getVideoTracks().forEach(track => track.stop());
             document.getElementById('local-video').srcObject = null;
             isCameraOn = false;
             camBtn.innerText = "Turn On Cam";
             camBtn.classList.add('active');
-
-            if (currentCall) {
-                updateStreamInCall();
-            }
+            if (currentCall) updateStreamInCall();
         }
     }
 
     async function switchCamera() {
         if (!isCameraOn) return;
         usingFrontCamera = !usingFrontCamera;
-
-        const videoTracks = localStream.getVideoTracks();
-        videoTracks.forEach(track => track.stop());
-
+        localStream.getVideoTracks().forEach(track => track.stop());
         try {
             const newStream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: usingFrontCamera ? 'user' : 'environment' }, 
                 audio: true 
             });
-            
             const audioTrack = localStream.getAudioTracks()[0];
-            if(audioTrack) {
-                newStream.addTrack(audioTrack);
-            }
+            if(audioTrack) newStream.addTrack(audioTrack);
             localStream = newStream;
             
             const localVideo = document.getElementById('local-video');
             localVideo.srcObject = localStream;
             localVideo.play();
-
-            if (currentCall) {
-                updateStreamInCall();
-            }
+            if (currentCall) updateStreamInCall();
         } catch (err) {
             alert('Could not switch camera.');
         }
@@ -1087,10 +1049,7 @@
         const videoTrack = isCameraOn ? localStream.getVideoTracks()[0] : null;
         const senders = currentCall.peerConnection.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind === 'video');
-        
-        if (videoSender) {
-            videoSender.replaceTrack(videoTrack);
-        }
+        if (videoSender) videoSender.replaceTrack(videoTrack);
     }
 
     function toggleMic() {
@@ -1110,10 +1069,9 @@
         const speakerBtn = document.getElementById('speaker-btn');
         const remoteVideo = document.getElementById('remote-video');
         const remoteAudio = document.getElementById('remote-audio');
-
         const activeMediaElement = (activeCallMode === 'video') ? remoteVideo : remoteAudio;
-        applyAudioRouting(activeMediaElement);
-
+        
+        activeMediaElement.volume = isLoudSpeaker ? 1.0 : 0.35;
         if (isLoudSpeaker) {
             speakerBtn.innerText = "Speaker: Loud";
             speakerBtn.classList.remove('speaker-normal');
@@ -1121,36 +1079,6 @@
             speakerBtn.innerText = isMobileDevice ? "Speaker: Ear" : "Speaker: Normal";
             speakerBtn.classList.add('speaker-normal');
         }
-    }
-
-    async function applyAudioRouting(element) {
-        if (!element) return;
-
-        if (isMobileDevice && 'setSinkId' in element) {
-            try {
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const audioOutputs = devices.filter(d => d.kind === 'audiooutput');
-                
-                if (audioOutputs.length > 1) {
-                    const targetDevice = audioOutputs.find(d => {
-                        const name = d.label.toLowerCase();
-                        if (!isLoudSpeaker) {
-                            return name.includes('earpiece') || name.includes('receiver') || name.includes('built-in');
-                        } else {
-                            return name.includes('speaker') || name.includes('loudspeaker');
-                        }
-                    });
-
-                    if (targetDevice) {
-                        await element.setSinkId(targetDevice.deviceId);
-                    }
-                }
-            } catch (err) {
-                console.log("SinkId routing fallback to volume control:", err);
-            }
-        }
-
-        element.volume = isLoudSpeaker ? 1.0 : 0.35;
     }
 
     function sendMessage() {
