@@ -402,7 +402,7 @@
             font-size: 13.5px;
         }
 
-        /* File Transfer Styling Panel */
+        /* File & Folder Transfer Section */
         .file-transfer-section {
             padding: 12px 14px 16px 14px;
             border-top: 1px solid var(--border);
@@ -425,32 +425,29 @@
             align-items: center;
         }
 
-        .file-input-wrapper input[type="file"] {
-            display: none;
-        }
-
         .file-custom-btn {
             background: rgba(30, 41, 59, 0.8);
             border: 1px solid var(--border);
             color: var(--text-main);
-            padding: 8px 12px;
+            padding: 8px 10px;
             border-radius: 8px;
-            font-size: 12.5px;
+            font-size: 12px;
             cursor: pointer;
             flex: 1;
             text-overflow: ellipsis;
             overflow: hidden;
             white-space: nowrap;
             transition: all 0.2s;
+            text-align: center;
         }
 
         .file-custom-btn:hover {
             border-color: var(--accent);
         }
 
-        .file-transfer-section button {
-            padding: 8px 14px;
-            font-size: 12.5px;
+        .file-transfer-section button.send-action {
+            padding: 8px 12px;
+            font-size: 12px;
         }
 
         .progress-bar-container {
@@ -651,13 +648,17 @@
                 <button onclick="sendMessage()">Send</button>
             </div>
 
-            <!-- P2P Unlimited File Share Panel -->
+            <!-- Enhanced File & Folder Transfer Panel -->
             <div class="file-transfer-section">
-                <label>P2P File Transfer (Any Size)</label>
+                <label>P2P File / Folder Share</label>
                 <div class="file-input-wrapper">
-                    <input type="file" id="file-input" onchange="handleFileSelect(this)">
-                    <button class="file-custom-btn" id="file-label-btn" onclick="document.getElementById('file-input').click()">Choose file...</button>
-                    <button onclick="sendFile()" id="send-file-btn" disabled>Send</button>
+                    <!-- Hidden inputs for Single File or Full Folder selection -->
+                    <input type="file" id="single-file-input" style="display:none" onchange="handleFileSelection(this.files[0])">
+                    <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none" onchange="handleFolderSelection(this.files)">
+                    
+                    <button class="file-custom-btn" id="file-label-btn" onclick="document.getElementById('single-file-input').click()">Select File</button>
+                    <button class="file-custom-btn" onclick="document.getElementById('folder-input').click()">Select Folder</button>
+                    <button class="send-action" onclick="startSending()" id="send-file-btn" disabled>Send</button>
                 </div>
                 <div class="progress-bar-container" id="progress-container">
                     <div class="progress-bar" id="progress-bar"></div>
@@ -681,8 +682,9 @@
     let usingFrontCamera = true;
     let activeCallMode = 'video';
     
-    // File transfer global vars
-    let selectedFile = null;
+    // Transfer Queue & Management Variables
+    let filesQueue = [];
+    let currentFileIndex = 0;
     let incomingFileMeta = null;
     let incomingFileBuffer = [];
     let receivedSize = 0;
@@ -877,7 +879,6 @@
     }
 
     function setupConnectionEvents() {
-        // Handle incoming data as binary ArrayBuffers or JSON messages
         conn.on('data', (data) => {
             if (data === '__DISCONNECT__') {
                 triggerDisconnect(false); 
@@ -891,10 +892,9 @@
                     receivedSize = 0;
                     document.getElementById('progress-container').style.display = 'block';
                     document.getElementById('transfer-status').innerText = `Receiving 0% (${incomingFileMeta.name})`;
-                    appendMessage(`Incoming file: ${incomingFileMeta.name} (${(incomingFileMeta.size / (1024*1024)).toFixed(2)} MB)`, 'incoming');
+                    appendMessage(`Incoming: ${incomingFileMeta.name} (${(incomingFileMeta.size / (1024*1024)).toFixed(2)} MB)`, 'incoming');
                 }
             } else if (data instanceof ArrayBuffer) {
-                // Handling binary chunks for any large file size
                 incomingFileBuffer.push(data);
                 receivedSize += data.byteLength;
 
@@ -904,19 +904,19 @@
                     document.getElementById('transfer-status').innerText = `Receiving ${progress}%`;
 
                     if (receivedSize >= incomingFileMeta.size) {
-                        // Assemble blob and automatically trigger user download
+                        // Automatically trigger download on partner side using proper relative path or name
                         const completeBlob = new Blob(incomingFileBuffer, { type: incomingFileMeta.fileType });
                         const downloadUrl = URL.createObjectURL(completeBlob);
                         
                         const downloadLink = document.createElement('a');
                         downloadLink.href = downloadUrl;
-                        downloadLink.download = incomingFileMeta.name;
+                        downloadLink.download = incomingFileMeta.path || incomingFileMeta.name;
                         document.body.appendChild(downloadLink);
                         downloadLink.click();
                         document.body.removeChild(downloadLink);
 
-                        document.getElementById('transfer-status').innerText = `Download Complete: ${incomingFileMeta.name}`;
-                        appendMessage(`File downloaded successfully: ${incomingFileMeta.name}`, 'incoming');
+                        document.getElementById('transfer-status').innerText = `Downloaded: ${incomingFileMeta.name}`;
+                        appendMessage(`Downloaded successfully: ${incomingFileMeta.name}`, 'incoming');
                         incomingFileMeta = null;
                         incomingFileBuffer = [];
                     }
@@ -931,59 +931,76 @@
         });
     }
 
-    // File selection UI handler
-    function handleFileSelect(input) {
-        if (input.files && input.files[0]) {
-            selectedFile = input.files[0];
-            document.getElementById('file-label-btn').innerText = selectedFile.name;
-            document.getElementById('send-file-btn').disabled = false;
-        }
+    function handleFileSelection(file) {
+        if (!file) return;
+        filesQueue = [file];
+        document.getElementById('file-label-btn').innerText = file.name;
+        document.getElementById('send-file-btn').disabled = false;
     }
 
-    // Chunk-based file streaming sender to support arbitrarily large files without crashing memory
-    function sendFile() {
-        if (!selectedFile || !conn || !conn.open) {
-            alert('Select a file and make sure you are connected to a partner!');
+    function handleFolderSelection(fileList) {
+        if (!fileList || fileList.length === 0) return;
+        filesQueue = Array.from(fileList);
+        document.getElementById('file-label-btn').innerText = `Folder (${filesQueue.length} files)`;
+        document.getElementById('send-file-btn').disabled = false;
+    }
+
+    function startSending() {
+        if (filesQueue.length === 0 || !conn || !conn.open) {
+            alert('Please select a file or folder and check your connection!');
+            return;
+        }
+        currentFileIndex = 0;
+        document.getElementById('send-file-btn').disabled = true;
+        document.getElementById('progress-container').style.display = 'block';
+        sendNextFileInQueue();
+    }
+
+    function sendNextFileInQueue() {
+        if (currentFileIndex >= filesQueue.length) {
+            document.getElementById('transfer-status').innerText = "All items sent successfully!";
+            document.getElementById('file-label-btn').innerText = "Select File";
+            filesQueue = [];
+            document.getElementById('send-file-btn').disabled = true;
             return;
         }
 
-        const CHUNK_SIZE = 16384; // 16KB data chunks
+        const file = filesQueue[currentFileIndex];
+        const CHUNK_SIZE = 16384; // 16KB chunking
         const reader = new FileReader();
         let offset = 0;
 
-        // Send metadata first
+        // Retain relative directory paths for folder downloads
+        const relativePath = file.webkitRelativePath && file.webkitRelativePath !== "" ? file.webkitRelativePath : file.name;
+
         conn.send({
             type: 'file-meta',
-            name: selectedFile.name,
-            size: selectedFile.size,
-            fileType: selectedFile.type
+            name: file.name,
+            path: relativePath,
+            size: file.size,
+            fileType: file.type
         });
 
-        document.getElementById('progress-container').style.display = 'block';
-        document.getElementById('send-file-btn').disabled = true;
-        document.getElementById('file-label-btn').innerText = "Sending file...";
+        document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${file.name} (0%)`;
 
         reader.onload = function(e) {
-            conn.send(e.target.result); // Send binary ArrayBuffer slice
+            conn.send(e.target.result);
             offset += e.target.result.byteLength;
 
-            const progress = Math.min(100, Math.round((offset / selectedFile.size) * 100));
+            const progress = Math.min(100, Math.round((offset / file.size) * 100));
             document.getElementById('progress-bar').style.width = progress + '%';
-            document.getElementById('transfer-status').innerText = `Sending ${progress}%`;
+            document.getElementById('transfer-status').innerText = `Sending [${currentFileIndex + 1}/${filesQueue.length}]: ${file.name} (${progress}%)`;
 
-            if (offset < selectedFile.size) {
+            if (offset < file.size) {
                 readNextChunk();
             } else {
-                document.getElementById('transfer-status').innerText = `Sent Complete: ${selectedFile.name}`;
-                appendMessage(`Successfully sent file: ${selectedFile.name}`, 'outgoing');
-                document.getElementById('file-label-btn').innerText = "Choose file...";
-                selectedFile = null;
-                document.getElementById('file-input').value = "";
+                currentFileIndex++;
+                sendNextFileInQueue();
             }
         };
 
         function readNextChunk() {
-            const slice = selectedFile.slice(offset, offset + CHUNK_SIZE);
+            const slice = file.slice(offset, offset + CHUNK_SIZE);
             reader.readAsArrayBuffer(slice);
         }
 
