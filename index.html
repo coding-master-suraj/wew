@@ -341,6 +341,32 @@
             color: white;
         }
 
+        .file-msg-box {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .file-download-btn {
+            background: var(--success);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+            transition: all 0.2s;
+        }
+
+        .file-download-btn:hover {
+            background: var(--success-hover);
+        }
+
         .emoji-bar {
             display: flex;
             padding: 10px 14px;
@@ -402,7 +428,6 @@
             font-size: 13.5px;
         }
 
-        /* File & Folder Transfer Section */
         .file-transfer-section {
             padding: 12px 14px 16px 14px;
             border-top: 1px solid var(--border);
@@ -534,7 +559,6 @@
         }
         .btn-accept:hover {
             background: var(--success-hover);
-            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5);
         }
 
         .btn-reject {
@@ -545,7 +569,6 @@
         }
         .btn-reject:hover {
             background: var(--danger-hover);
-            box-shadow: 0 6px 20px rgba(244, 63, 94, 0.5);
         }
 
         #animation-overlay {
@@ -827,6 +850,35 @@
         callTypeSelect.disabled = true;
     }
 
+    function resetUIAfterDisconnect() {
+        const connectBtn = document.getElementById('connect-btn');
+        const remoteInput = document.getElementById('remote-code-input');
+        const callTypeSelect = document.getElementById('call-type-select');
+        
+        connectBtn.innerText = "Connect";
+        connectBtn.style.background = "var(--accent-gradient)";
+        connectBtn.style.boxShadow = "0 4px 12px rgba(99, 102, 241, 0.3)";
+        connectBtn.onclick = connectToPeer;
+        
+        remoteInput.disabled = false;
+        remoteInput.value = "";
+        callTypeSelect.disabled = false;
+
+        document.getElementById('controls-container').innerHTML = "";
+        document.getElementById('local-video').srcObject = null;
+        document.getElementById('remote-video').srcObject = null;
+        document.getElementById('remote-audio').srcObject = null;
+        
+        document.getElementById('local-box-wrapper').style.display = 'flex';
+        document.getElementById('remote-box-wrapper').style.display = 'flex';
+        document.getElementById('local-label').innerText = "My Camera (Off)";
+
+        isCameraOn = false;
+        localStream = null;
+        currentCall = null;
+        conn = null;
+    }
+
     async function ensureLocalStream(audioOnly = false) {
         if (localStream) return localStream;
         try {
@@ -837,6 +889,7 @@
                 localVideo.srcObject = localStream;
                 await localVideo.play();
                 isCameraOn = true;
+                document.getElementById('local-label').innerText = "My Camera";
             }
             return localStream;
         } catch (err) {
@@ -850,7 +903,6 @@
     }
 
     function setupConnectionEvents() {
-        // Set binary type explicitly for dependable raw chunks delivery
         if (conn && conn.dataChannel) {
             conn.dataChannel.binaryType = 'arraybuffer';
         }
@@ -867,7 +919,6 @@
                 receivedSize = 0;
                 document.getElementById('progress-container').style.display = 'block';
                 document.getElementById('transfer-status').innerText = `Receiving 0% (${incomingFileMeta.name})`;
-                appendMessage(`Incoming: ${incomingFileMeta.name} (${(incomingFileMeta.size / (1024*1024)).toFixed(2)} MB)`, 'incoming');
             } else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
                 const chunk = data instanceof ArrayBuffer ? data : data.buffer;
                 incomingFileBuffer.push(chunk);
@@ -882,20 +933,20 @@
                         const completeBlob = new Blob(incomingFileBuffer, { type: incomingFileMeta.fileType || 'application/octet-stream' });
                         const downloadUrl = URL.createObjectURL(completeBlob);
                         
-                        const downloadLink = document.createElement('a');
-                        downloadLink.href = downloadUrl;
-                        // Fallback name if path isn't present
-                        downloadLink.download = incomingFileMeta.name || 'downloaded-file';
-                        document.body.appendChild(downloadLink);
-                        downloadLink.click();
-                        
+                        // Automatic Download Trigger
+                        const autoLink = document.createElement('a');
+                        autoLink.href = downloadUrl;
+                        autoLink.download = incomingFileMeta.name || 'downloaded-file';
+                        document.body.appendChild(autoLink);
+                        autoLink.click();
                         setTimeout(() => {
-                            document.body.removeChild(downloadLink);
-                            URL.revokeObjectURL(downloadUrl);
+                            document.body.removeChild(autoLink);
                         }, 1000);
 
-                        document.getElementById('transfer-status').innerText = `Downloaded: ${incomingFileMeta.name}`;
-                        appendMessage(`Downloaded successfully: ${incomingFileMeta.name}`, 'incoming');
+                        // Chat Box Message with Manual Download Button
+                        appendFileDownloadMessage(incomingFileMeta.name, downloadUrl);
+
+                        document.getElementById('transfer-status').innerText = `Completed: ${incomingFileMeta.name}`;
                         incomingFileMeta = null;
                         incomingFileBuffer = [];
                     }
@@ -947,7 +998,6 @@
         const file = filesQueue[currentFileIndex];
         const CHUNK_SIZE = 16384; 
         let offset = 0;
-
         const displayName = file.name;
 
         conn.send({
@@ -974,7 +1024,7 @@
                 readNextChunk();
             } else {
                 currentFileIndex++;
-                setTimeout(sendNextFileInGroup, 200); // small delay between files
+                setTimeout(sendNextFileInQueue, 200);
             }
         };
 
@@ -984,10 +1034,6 @@
         }
 
         readNextChunk();
-    }
-
-    function sendNextFileInGroup() {
-        sendNextFileInQueue();
     }
 
     async function toggleCamera() {
@@ -1008,6 +1054,7 @@
                 isCameraOn = true;
                 camBtn.innerText = "Turn Off Cam";
                 camBtn.classList.remove('active');
+                document.getElementById('local-label').innerText = "My Camera";
                 if (currentCall) updateStreamInCall();
             } catch (err) {
                 alert('Camera access denied or unavailable.');
@@ -1018,6 +1065,7 @@
             isCameraOn = false;
             camBtn.innerText = "Turn On Cam";
             camBtn.classList.add('active');
+            document.getElementById('local-label').innerText = "My Camera (Off)";
             if (currentCall) updateStreamInCall();
         }
     }
@@ -1133,13 +1181,36 @@
         chatBox.scrollTop = chatBox.scrollHeight;
     }
 
+    function appendFileDownloadMessage(fileName, fileUrl) {
+        const chatBox = document.getElementById('chat-messages');
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `message incoming`;
+        
+        msgDiv.innerHTML = `
+            <div class="file-msg-box">
+                <span>📁 Received: <b>${fileName}</b></span>
+                <a class="file-download-btn" href="${fileUrl}" download="${fileName}">Download File</a>
+            </div>
+        `;
+        chatBox.appendChild(msgDiv);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
     function triggerDisconnect(sendSignal = true) {
         if (sendSignal && conn && conn.open) {
             conn.send('__DISCONNECT__');
         }
-        setTimeout(() => {
-            window.location.reload();
-        }, 300);
+        if (currentCall) {
+            currentCall.close();
+        }
+        if (conn) {
+            conn.close();
+        }
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+        }
+        resetUIAfterDisconnect();
     }
 </script>
 
