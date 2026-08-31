@@ -694,6 +694,7 @@
 
 <script>
     let localStream = null;
+    let blackVideoTrack = null;
     let peer = null;
     let conn = null;
     let currentCall = null;
@@ -823,6 +824,18 @@
                 const remoteVideo = document.getElementById('remote-video');
                 remoteVideo.srcObject = remoteStream;
                 applyAudioRouting(remoteVideo);
+
+                // If the sender temporarily stops/changes video tracks,
+                // force the element to repaint instead of retaining a stale frame.
+                remoteStream.getVideoTracks().forEach(track => {
+                    track.addEventListener('ended', () => {
+                        if (remoteVideo.srcObject === remoteStream) {
+                            remoteVideo.pause();
+                            remoteVideo.srcObject = null;
+                            remoteVideo.poster = '';
+                        }
+                    });
+                });
                 try {
                     await remoteVideo.play();
                 } catch (e) {
@@ -877,8 +890,14 @@
         callTypeSelect.disabled = false;
 
         document.getElementById('controls-container').innerHTML = "";
-        document.getElementById('local-video').srcObject = null;
-        document.getElementById('remote-video').srcObject = null;
+        const localVideoEl = document.getElementById('local-video');
+        const remoteVideoEl = document.getElementById('remote-video');
+
+        localVideoEl.pause();
+        remoteVideoEl.pause();
+
+        localVideoEl.srcObject = null;
+        remoteVideoEl.srcObject = null;
         document.getElementById('remote-audio').srcObject = null;
         
         document.getElementById('local-box-wrapper').style.display = 'flex';
@@ -1070,12 +1089,23 @@
                 alert('Camera access denied or unavailable.');
             }
         } else {
-            localStream.getVideoTracks().forEach(track => track.stop());
-            document.getElementById('local-video').srcObject = null;
+            // Stop the physical camera, but keep the audio track alive.
+            if (localStream) {
+                localStream.getVideoTracks().forEach(track => track.stop());
+            }
+
+            // Show a black/off state locally instead of leaving the last frame.
+            const localVideo = document.getElementById('local-video');
+            localVideo.pause();
+            localVideo.srcObject = null;
+
             isCameraOn = false;
             camBtn.innerText = "Turn On Cam";
             camBtn.classList.add('active');
             document.getElementById('local-label').innerText = "My Camera (Off)";
+
+            // IMPORTANT: send a live black track to the partner.
+            // Sending null can make some browsers keep displaying the last frame.
             if (currentCall) updateStreamInCall();
         }
     }
@@ -1102,12 +1132,48 @@
         }
     }
 
-    function updateStreamInCall() {
+    // Creates a real black video track. This prevents the partner's
+    // <video> element from freezing on the last camera frame when
+    // the camera is turned off.
+    function getBlackVideoTrack() {
+        if (blackVideoTrack && blackVideoTrack.readyState === 'live') {
+            return blackVideoTrack;
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 360;
+
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const blackStream = canvas.captureStream(5);
+        blackVideoTrack = blackStream.getVideoTracks()[0];
+        return blackVideoTrack;
+    }
+
+    async function updateStreamInCall() {
         if (!currentCall || !currentCall.peerConnection) return;
-        const videoTrack = isCameraOn ? localStream.getVideoTracks()[0] : null;
+
         const senders = currentCall.peerConnection.getSenders();
-        const videoSender = senders.find(s => s.track && s.track.kind === 'video');
-        if (videoSender) videoSender.replaceTrack(videoTrack);
+        const videoSender = senders.find(s =>
+            s.track && s.track.kind === 'video'
+        );
+
+        if (!videoSender) return;
+
+        const videoTrack = isCameraOn && localStream
+            ? localStream.getVideoTracks()[0]
+            : getBlackVideoTrack();
+
+        if (videoTrack) {
+            try {
+                await videoSender.replaceTrack(videoTrack);
+            } catch (err) {
+                console.error('Video track replace failed:', err);
+            }
+        }
     }
 
     function toggleMic() {
@@ -1220,6 +1286,12 @@
             localStream.getTracks().forEach(track => track.stop());
             localStream = null;
         }
+
+        if (blackVideoTrack) {
+            blackVideoTrack.stop();
+            blackVideoTrack = null;
+        }
+
         resetUIAfterDisconnect();
     }
 </script>
